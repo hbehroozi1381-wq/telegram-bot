@@ -12,6 +12,10 @@ from telegram.ext import (
     filters,
 )
 
+# =========================================================
+# CONFIG
+# =========================================================
+
 TOKEN = os.environ["BOT_TOKEN"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -103,14 +107,6 @@ async def init_db():
             key TEXT PRIMARY KEY,
             value TEXT DEFAULT ''
         );
-
-        CREATE TABLE IF NOT EXISTS bot_buttons (
-            id SERIAL PRIMARY KEY,
-            title TEXT NOT NULL,
-            callback_data TEXT NOT NULL,
-            position INTEGER DEFAULT 0,
-            active BOOLEAN DEFAULT TRUE
-        );
     """)
 
     defaults = {
@@ -127,31 +123,10 @@ async def init_db():
             ON CONFLICT(key) DO NOTHING
         """, key, value)
 
-    default_buttons = [
-        ("🛍 محصولات", "products", 1),
-        ("🛒 سبد خرید", "cart", 2),
-        ("📦 سفارش‌های من", "orders", 3),
-        ("🔎 جستجو", "search", 4),
-        ("📞 پشتیبانی", "support", 5),
-        ("👥 اعضای ربات", "members", 6),
-    ]
-
-    for title, callback, position in default_buttons:
-        await conn.execute("""
-            INSERT INTO bot_buttons(title, callback_data, position)
-            SELECT $1, $2, $3
-            WHERE NOT EXISTS(
-                SELECT 1 FROM bot_buttons WHERE callback_data=$2
-            )
-        """, title, callback, position)
-
     await conn.close()
-    print("DATABASE READY")
 
+    print("✅ DATABASE READY")
 
-# =========================================================
-# HELPERS
-# =========================================================
 
 async def setting(key):
     conn = await db()
@@ -165,14 +140,20 @@ async def setting(key):
 
 async def set_setting(key, value):
     conn = await db()
+
     await conn.execute("""
-        INSERT INTO settings(key,value)
-        VALUES($1,$2)
+        INSERT INTO settings(key, value)
+        VALUES($1, $2)
         ON CONFLICT(key)
         DO UPDATE SET value=EXCLUDED.value
     """, key, value)
+
     await conn.close()
 
+
+# =========================================================
+# HELPERS
+# =========================================================
 
 async def save_user(update):
     user = update.effective_user
@@ -184,7 +165,7 @@ async def save_user(update):
 
     await conn.execute("""
         INSERT INTO users(telegram_id, username, first_name)
-        VALUES($1,$2,$3)
+        VALUES($1, $2, $3)
         ON CONFLICT(telegram_id)
         DO UPDATE SET
             username=EXCLUDED.username,
@@ -198,46 +179,56 @@ async def save_user(update):
     await conn.close()
 
 
-def admin_only(user_id):
+def is_admin(user_id):
     return user_id == ADMIN_ID
 
 
-async def main_menu():
-    conn = await db()
-
-    buttons = await conn.fetch("""
-        SELECT title, callback_data
-        FROM bot_buttons
-        WHERE active=TRUE
-        ORDER BY position
-    """)
-
-    await conn.close()
-
-    keyboard = []
-    row = []
-
-    for b in buttons:
-        row.append(
-            InlineKeyboardButton(
-                b["title"],
-                callback_data=b["callback_data"]
-            )
-        )
-
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
-
-    if row:
-        keyboard.append(row)
-
-    return InlineKeyboardMarkup(keyboard)
+def is_logged(context):
+    return (
+        context.user_data.get("admin_logged") is True
+        and context.user_data.get("admin_id") == ADMIN_ID
+    )
 
 
 def back_button(callback="home"):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 برگشت", callback_data=callback)]
+        [
+            InlineKeyboardButton(
+                "🔙 برگشت",
+                callback_data=callback
+            )
+        ]
+    ])
+
+
+async def main_menu():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🛍 محصولات",
+                callback_data="products"
+            ),
+            InlineKeyboardButton(
+                "🛒 سبد خرید",
+                callback_data="cart"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📦 سفارش‌های من",
+                callback_data="orders"
+            ),
+            InlineKeyboardButton(
+                "🔎 جستجو",
+                callback_data="search"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📞 پشتیبانی",
+                callback_data="support"
+            )
+        ]
     ])
 
 
@@ -245,7 +236,7 @@ def back_button(callback="home"):
 # START
 # =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update, context):
     await save_user(update)
 
     context.user_data.clear()
@@ -258,7 +249,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================================================
-# PRODUCTS
+# CUSTOMER PRODUCTS
 # =========================================================
 
 async def products_menu(query):
@@ -266,7 +257,7 @@ async def products_menu(query):
     conn = await db()
 
     brands = await conn.fetch("""
-        SELECT id,name
+        SELECT id, name
         FROM brands
         WHERE active=TRUE
         ORDER BY name
@@ -275,7 +266,12 @@ async def products_menu(query):
     await conn.close()
 
     keyboard = [
-        [InlineKeyboardButton("🔥 حراج", callback_data="sale")]
+        [
+            InlineKeyboardButton(
+                "🔥 حراج",
+                callback_data="sale"
+            )
+        ]
     ]
 
     row = []
@@ -296,13 +292,16 @@ async def products_menu(query):
         keyboard.append(row)
 
     keyboard.append([
-        InlineKeyboardButton("🔙 برگشت", callback_data="home")
+        InlineKeyboardButton(
+            "🔙 برگشت",
+            callback_data="home"
+        )
     ])
 
     await query.edit_message_text(
         "🛍 محصولات فروشگاه\n\n"
-        "🔥 حراج همیشه بالای لیست قرار دارد.\n"
-        "برند مورد نظر را انتخاب کنید:",
+        "🔥 حراج\n"
+        "🏷 برند موردنظر را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -311,13 +310,14 @@ async def brand_products(query, brand_id):
 
     conn = await db()
 
-    brand = await conn.fetchrow(
-        "SELECT name FROM brands WHERE id=$1 AND active=TRUE",
-        brand_id
-    )
+    brand = await conn.fetchrow("""
+        SELECT name
+        FROM brands
+        WHERE id=$1 AND active=TRUE
+    """, brand_id)
 
     products = await conn.fetch("""
-        SELECT id,name,price,sale_price
+        SELECT id, name, price, sale_price
         FROM products
         WHERE brand_id=$1 AND active=TRUE
         ORDER BY id DESC
@@ -326,13 +326,16 @@ async def brand_products(query, brand_id):
     await conn.close()
 
     if not brand:
-        await query.edit_message_text("❌ برند پیدا نشد.")
+        await query.edit_message_text(
+            "❌ برند پیدا نشد.",
+            reply_markup=back_button("products")
+        )
         return
 
     if not products:
         await query.edit_message_text(
             f"🏷 {brand['name']}\n\n"
-            "فعلاً محصولی از این برند ثبت نشده است.",
+            "فعلاً محصولی ثبت نشده.",
             reply_markup=back_button("products")
         )
         return
@@ -341,10 +344,13 @@ async def brand_products(query, brand_id):
 
     for p in products:
 
+        price = p["price"]
+
         if p["sale_price"] > 0 and p["sale_price"] < p["price"]:
-            text = f"🔥 {p['name']} | {p['sale_price']:,} تومان"
+            price = p["sale_price"]
+            text = f"🔥 {p['name']} | {price:,} تومان"
         else:
-            text = f"👟 {p['name']} | {p['price']:,} تومان"
+            text = f"👟 {p['name']} | {price:,} تومان"
 
         keyboard.append([
             InlineKeyboardButton(
@@ -354,12 +360,15 @@ async def brand_products(query, brand_id):
         ])
 
     keyboard.append([
-        InlineKeyboardButton("🔙 برندها", callback_data="products")
+        InlineKeyboardButton(
+            "🔙 برندها",
+            callback_data="products"
+        )
     ])
 
     await query.edit_message_text(
         f"🏷 {brand['name']}\n\n"
-        "مدل مورد نظر را انتخاب کنید:",
+        "مدل موردنظر را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -369,11 +378,11 @@ async def sale_products(query):
     conn = await db()
 
     products = await conn.fetch("""
-        SELECT id,name,sale_price
+        SELECT id, name, sale_price
         FROM products
         WHERE active=TRUE
-        AND sale_price>0
-        AND sale_price<price
+        AND sale_price > 0
+        AND sale_price < price
         ORDER BY id DESC
     """)
 
@@ -398,7 +407,10 @@ async def sale_products(query):
         ])
 
     keyboard.append([
-        InlineKeyboardButton("🔙 محصولات", callback_data="products")
+        InlineKeyboardButton(
+            "🔙 محصولات",
+            callback_data="products"
+        )
     ])
 
     await query.edit_message_text(
@@ -411,10 +423,13 @@ async def product_details(query, product_id):
 
     conn = await db()
 
-    p = await conn.fetchrow("""
-        SELECT p.*, b.name AS brand_name
+    product = await conn.fetchrow("""
+        SELECT
+            p.*,
+            b.name AS brand_name
         FROM products p
-        LEFT JOIN brands b ON b.id=p.brand_id
+        LEFT JOIN brands b
+            ON b.id=p.brand_id
         WHERE p.id=$1 AND p.active=TRUE
     """, product_id)
 
@@ -423,62 +438,71 @@ async def product_details(query, product_id):
         FROM product_images
         WHERE product_id=$1
         ORDER BY position
+        LIMIT 5
     """, product_id)
 
     await conn.close()
 
-    if not p:
-        await query.edit_message_text("❌ محصول پیدا نشد.")
+    if not product:
+        await query.edit_message_text(
+            "❌ محصول پیدا نشد."
+        )
         return
 
-    sale = p["sale_price"] > 0 and p["sale_price"] < p["price"]
+    sale = (
+        product["sale_price"] > 0
+        and product["sale_price"] < product["price"]
+    )
 
     if sale:
         price_text = (
-            f"💰 قیمت اصلی: {p['price']:,} تومان\n"
-            f"🔥 قیمت حراج: {p['sale_price']:,} تومان"
+            f"💰 قیمت اصلی: {product['price']:,} تومان\n"
+            f"🔥 قیمت حراج: {product['sale_price']:,} تومان"
         )
     else:
-        price_text = f"💰 قیمت: {p['price']:,} تومان"
+        price_text = (
+            f"💰 قیمت: {product['price']:,} تومان"
+        )
 
     text = (
-        f"👟 {p['name']}\n\n"
-        f"🏷 برند: {p['brand_name'] or '---'}\n"
+        f"👟 {product['name']}\n\n"
+        f"🏷 برند: {product['brand_name'] or '---'}\n"
         f"{price_text}\n"
-        f"📏 سایزها: {p['sizes'] or '---'}\n"
-        f"📦 موجودی: {p['stock']}\n\n"
-        f"{p['description'] or ''}"
+        f"📏 سایزها: {product['sizes'] or '---'}\n"
+        f"📦 موجودی: {product['stock']}\n\n"
+        f"{product['description'] or ''}"
     )
 
-    keyboard = [
-        [InlineKeyboardButton(
-            "🛒 افزودن به سبد خرید",
-            callback_data=f"buy:{product_id}"
-        )],
-        [InlineKeyboardButton(
-            "🔙 برگشت",
-            callback_data="products"
-        )]
-    ]
+    markup = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🛒 افزودن به سبد خرید",
+                callback_data=f"buy:{product_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 محصولات",
+                callback_data="products"
+            )
+        ]
+    ])
 
-    markup = InlineKeyboardMarkup(keyboard)
-
-    # حداکثر 5 عکس
     if images:
         try:
             await query.message.delete()
 
-            for i, image in enumerate(images[:5]):
+            for i, image in enumerate(images):
 
                 if i == 0:
                     await query.message.chat.send_photo(
-                        image["file_id"],
+                        photo=image["file_id"],
                         caption=text,
                         reply_markup=markup
                     )
                 else:
                     await query.message.chat.send_photo(
-                        image["file_id"]
+                        photo=image["file_id"]
                     )
 
             return
@@ -498,9 +522,11 @@ async def product_details(query, product_id):
 
 async def add_to_cart(update, product_id):
 
+    query = update.callback_query
+
     conn = await db()
 
-    p = await conn.fetchrow("""
+    product = await conn.fetchrow("""
         SELECT *
         FROM products
         WHERE id=$1 AND active=TRUE
@@ -508,16 +534,23 @@ async def add_to_cart(update, product_id):
 
     await conn.close()
 
-    if not p:
-        await update.callback_query.answer(
-            "محصول پیدا نشد.",
+    if not product:
+        await query.answer(
+            "❌ محصول پیدا نشد.",
+            show_alert=True
+        )
+        return
+
+    if product["stock"] <= 0:
+        await query.answer(
+            "❌ این محصول ناموجود است.",
             show_alert=True
         )
         return
 
     sizes = [
         x.strip()
-        for x in (p["sizes"] or "").split(",")
+        for x in (product["sizes"] or "").split(",")
         if x.strip()
     ]
 
@@ -540,8 +573,8 @@ async def add_to_cart(update, product_id):
             )
         ])
 
-        await update.callback_query.edit_message_text(
-            "📏 سایز مورد نظر را انتخاب کنید:",
+        await query.edit_message_text(
+            "📏 سایز موردنظر را انتخاب کنید:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -562,14 +595,45 @@ async def insert_cart(update, product_id, size):
 
     conn = await db()
 
-    p = await conn.fetchrow(
-        "SELECT name FROM products WHERE id=$1",
-        product_id
-    )
+    product = await conn.fetchrow("""
+        SELECT name, stock
+        FROM products
+        WHERE id=$1 AND active=TRUE
+    """, product_id)
+
+    if not product:
+        await conn.close()
+        await update.callback_query.answer(
+            "❌ محصول پیدا نشد.",
+            show_alert=True
+        )
+        return
+
+    current = await conn.fetchval("""
+        SELECT COALESCE(quantity,0)
+        FROM cart_items
+        WHERE telegram_id=$1
+        AND product_id=$2
+        AND size=$3
+    """, telegram_id, product_id, size)
+
+    current = current or 0
+
+    if current >= product["stock"]:
+        await conn.close()
+        await update.callback_query.answer(
+            "❌ بیشتر از موجودی نمی‌توانی اضافه کنی.",
+            show_alert=True
+        )
+        return
 
     await conn.execute("""
-        INSERT INTO cart_items
-        (telegram_id,product_id,size,quantity)
+        INSERT INTO cart_items(
+            telegram_id,
+            product_id,
+            size,
+            quantity
+        )
         VALUES($1,$2,$3,1)
         ON CONFLICT(telegram_id,product_id,size)
         DO UPDATE SET quantity=cart_items.quantity+1
@@ -582,7 +646,7 @@ async def insert_cart(update, product_id, size):
     await conn.close()
 
     await update.callback_query.edit_message_text(
-        f"✅ {p['name']}\n\n"
+        f"✅ {product['name']}\n\n"
         "به سبد خرید اضافه شد.",
         reply_markup=InlineKeyboardMarkup([
             [
@@ -613,9 +677,11 @@ async def show_cart(query):
             c.quantity,
             p.name,
             p.price,
-            p.sale_price
+            p.sale_price,
+            p.stock
         FROM cart_items c
-        JOIN products p ON p.id=c.product_id
+        JOIN products p
+            ON p.id=c.product_id
         WHERE c.telegram_id=$1
         ORDER BY c.id
     """, query.from_user.id)
@@ -636,7 +702,10 @@ async def show_cart(query):
 
         price = item["price"]
 
-        if item["sale_price"] > 0 and item["sale_price"] < price:
+        if (
+            item["sale_price"] > 0
+            and item["sale_price"] < item["price"]
+        ):
             price = item["sale_price"]
 
         subtotal = price * item["quantity"]
@@ -651,25 +720,33 @@ async def show_cart(query):
 
     shipping = int(await setting("shipping_cost") or 0)
 
+    final_total = total + shipping
+
     text += (
         f"🛍 جمع کالاها: {total:,} تومان\n"
         f"🚚 ارسال: {shipping:,} تومان\n"
-        f"💵 مبلغ نهایی: {total + shipping:,} تومان"
+        f"💵 مبلغ نهایی: {final_total:,} تومان"
     )
 
     keyboard = [
-        [InlineKeyboardButton(
-            "📦 ثبت سفارش",
-            callback_data="checkout"
-        )],
-        [InlineKeyboardButton(
-            "🛍 ادامه خرید",
-            callback_data="products"
-        )],
-        [InlineKeyboardButton(
-            "🔙 برگشت",
-            callback_data="home"
-        )]
+        [
+            InlineKeyboardButton(
+                "📦 ثبت سفارش",
+                callback_data="checkout"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🛍 ادامه خرید",
+                callback_data="products"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 برگشت",
+                callback_data="home"
+            )
+        ]
     ]
 
     await query.edit_message_text(
@@ -700,33 +777,43 @@ async def start_search(query, context):
 
 async def do_search(update, context):
 
-    if context.user_data.get("state") != "search":
-        return
-
     word = update.message.text.strip()
+
+    if not word:
+        await update.message.reply_text(
+            "❌ چیزی وارد نکردی."
+        )
+        return
 
     context.user_data["state"] = None
 
     conn = await db()
 
     products = await conn.fetch("""
-        SELECT id,name,price,sale_price
-        FROM products
-        WHERE active=TRUE
+        SELECT
+            p.id,
+            p.name,
+            p.price,
+            p.sale_price
+        FROM products p
+        LEFT JOIN brands b
+            ON b.id=p.brand_id
+        WHERE p.active=TRUE
         AND (
-            name ILIKE $1
-            OR description ILIKE $1
-            OR category ILIKE $1
-            OR keywords ILIKE $1
+            p.name ILIKE $1
+            OR p.description ILIKE $1
+            OR p.category ILIKE $1
+            OR p.keywords ILIKE $1
+            OR b.name ILIKE $1
         )
-        ORDER BY id DESC
+        ORDER BY p.id DESC
     """, f"%{word}%")
 
     await conn.close()
 
     if not products:
         await update.message.reply_text(
-            "❌ محصولی پیدا نشد.",
+            f"❌ برای «{word}» محصولی پیدا نشد.",
             reply_markup=await main_menu()
         )
         return
@@ -737,7 +824,10 @@ async def do_search(update, context):
 
         price = p["price"]
 
-        if p["sale_price"] > 0 and p["sale_price"] < price:
+        if (
+            p["sale_price"] > 0
+            and p["sale_price"] < p["price"]
+        ):
             price = p["sale_price"]
 
         keyboard.append([
@@ -747,6 +837,13 @@ async def do_search(update, context):
             )
         ])
 
+    keyboard.append([
+        InlineKeyboardButton(
+            "🔙 منوی اصلی",
+            callback_data="home"
+        )
+    ])
+
     await update.message.reply_text(
         f"🔎 نتایج جستجو برای «{word}»:",
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -754,7 +851,7 @@ async def do_search(update, context):
 
 
 # =========================================================
-# CUSTOMER INFO / CHECKOUT
+# CHECKOUT
 # =========================================================
 
 async def checkout_start(query, context):
@@ -779,7 +876,7 @@ async def checkout_start(query, context):
     context.user_data["state"] = "customer_name"
 
     await query.edit_message_text(
-        "👤 لطفاً نام و نام خانوادگی خود را ارسال کنید:"
+        "👤 نام و نام خانوادگی را ارسال کنید:"
     )
 
 
@@ -788,16 +885,28 @@ async def checkout_message(update, context):
     state = context.user_data.get("state")
 
     if state == "customer_name":
-        context.user_data["customer_name"] = update.message.text
+
+        name = update.message.text.strip()
+
+        if len(name) < 3:
+            await update.message.reply_text(
+                "❌ نام را کامل وارد کنید."
+            )
+            return
+
+        context.user_data["customer_name"] = name
         context.user_data["state"] = "phone"
 
         await update.message.reply_text(
-            "📱 شماره موبایل خود را ارسال کنید:"
+            "📱 شماره موبایل را ارسال کنید:"
         )
         return
 
     if state == "phone":
-        context.user_data["phone"] = update.message.text
+
+        phone = update.message.text.strip()
+
+        context.user_data["phone"] = phone
         context.user_data["state"] = "address"
 
         await update.message.reply_text(
@@ -806,7 +915,16 @@ async def checkout_message(update, context):
         return
 
     if state == "address":
-        context.user_data["address"] = update.message.text
+
+        address = update.message.text.strip()
+
+        if len(address) < 10:
+            await update.message.reply_text(
+                "❌ آدرس را کامل‌تر وارد کنید."
+            )
+            return
+
+        context.user_data["address"] = address
         context.user_data["state"] = "postal"
 
         await update.message.reply_text(
@@ -816,7 +934,9 @@ async def checkout_message(update, context):
 
     if state == "postal":
 
-        context.user_data["postal_code"] = update.message.text
+        postal = update.message.text.strip()
+
+        context.user_data["postal_code"] = postal
         context.user_data["state"] = None
 
         await create_order(update, context)
@@ -835,16 +955,18 @@ async def create_order(update, context):
             c.quantity,
             p.name,
             p.price,
-            p.sale_price
+            p.sale_price,
+            p.stock
         FROM cart_items c
-        JOIN products p ON p.id=c.product_id
+        JOIN products p
+            ON p.id=c.product_id
         WHERE c.telegram_id=$1
     """, telegram_id)
 
     if not items:
         await conn.close()
         await update.message.reply_text(
-            "سبد خرید خالی است."
+            "❌ سبد خرید خالی است."
         )
         return
 
@@ -852,9 +974,21 @@ async def create_order(update, context):
 
     for item in items:
 
+        if item["quantity"] > item["stock"]:
+            await conn.close()
+
+            await update.message.reply_text(
+                f"❌ موجودی «{item['name']}» کافی نیست.\n"
+                f"موجودی فعلی: {item['stock']}"
+            )
+            return
+
         price = item["price"]
 
-        if item["sale_price"] > 0 and item["sale_price"] < price:
+        if (
+            item["sale_price"] > 0
+            and item["sale_price"] < item["price"]
+        ):
             price = item["sale_price"]
 
         total += price * item["quantity"]
@@ -889,7 +1023,10 @@ async def create_order(update, context):
 
         price = item["price"]
 
-        if item["sale_price"] > 0 and item["sale_price"] < price:
+        if (
+            item["sale_price"] > 0
+            and item["sale_price"] < item["price"]
+        ):
             price = item["sale_price"]
 
         await conn.execute("""
@@ -911,10 +1048,10 @@ async def create_order(update, context):
             price
         )
 
-    await conn.execute(
-        "DELETE FROM cart_items WHERE telegram_id=$1",
-        telegram_id
-    )
+    await conn.execute("""
+        DELETE FROM cart_items
+        WHERE telegram_id=$1
+    """, telegram_id)
 
     await conn.close()
 
@@ -922,20 +1059,20 @@ async def create_order(update, context):
 
     if card:
         payment_text = (
-            f"💳 شماره کارت:\n"
+            "💳 شماره کارت:\n"
             f"`{card}`\n\n"
         )
     else:
         payment_text = (
-            "⚠️ شماره کارت هنوز توسط مدیریت ثبت نشده است.\n\n"
+            "⚠️ شماره کارت هنوز توسط مدیریت ثبت نشده.\n\n"
         )
 
     await update.message.reply_text(
         f"✅ سفارش شما ثبت شد.\n\n"
         f"🧾 شماره سفارش: #{order_id}\n"
-        f"💰 مبلغ قابل پرداخت: {final_total:,} تومان\n\n"
+        f"💰 مبلغ نهایی: {final_total:,} تومان\n\n"
         f"{payment_text}"
-        "پس از پرداخت، عکس رسید را همینجا ارسال کنید.",
+        "بعد از پرداخت، عکس رسید را همینجا ارسال کنید.",
         parse_mode="Markdown"
     )
 
@@ -957,7 +1094,7 @@ async def receive_receipt(update, context):
 
     if not update.message.photo:
         await update.message.reply_text(
-            "❌ لطفاً عکس رسید پرداخت را ارسال کنید."
+            "❌ لطفاً عکس رسید را ارسال کنید."
         )
         return
 
@@ -965,18 +1102,25 @@ async def receive_receipt(update, context):
 
     conn = await db()
 
+    order = await conn.fetchrow("""
+        SELECT *
+        FROM orders
+        WHERE id=$1
+    """, order_id)
+
+    if not order:
+        await conn.close()
+        await update.message.reply_text(
+            "❌ سفارش پیدا نشد."
+        )
+        return
+
     await conn.execute("""
         UPDATE orders
         SET receipt_file_id=$1,
             status='waiting_admin'
         WHERE id=$2
     """, file_id, order_id)
-
-    order = await conn.fetchrow("""
-        SELECT *
-        FROM orders
-        WHERE id=$1
-    """, order_id)
 
     await conn.close()
 
@@ -987,19 +1131,19 @@ async def receive_receipt(update, context):
         "⏳ بعد از بررسی پرداخت، نتیجه برای شما ارسال می‌شود."
     )
 
-    # ارسال سفارش برای مدیر
     try:
+
         await context.bot.send_photo(
             chat_id=ADMIN_ID,
             photo=file_id,
             caption=(
                 f"🧾 رسید جدید\n\n"
-                f"شماره سفارش: #{order_id}\n"
-                f"مبلغ: {order['total']:,} تومان\n"
-                f"مشتری: {order['customer_name']}\n"
-                f"تلفن: {order['phone']}\n"
-                f"آدرس: {order['address']}\n"
-                f"کد پستی: {order['postal_code']}"
+                f"🧾 سفارش: #{order_id}\n"
+                f"💰 مبلغ: {order['total']:,} تومان\n"
+                f"👤 مشتری: {order['customer_name']}\n"
+                f"📱 تلفن: {order['phone']}\n"
+                f"📍 آدرس: {order['address']}\n"
+                f"📮 کد پستی: {order['postal_code']}"
             ),
             reply_markup=InlineKeyboardMarkup([
                 [
@@ -1014,12 +1158,13 @@ async def receive_receipt(update, context):
                 ]
             ])
         )
+
     except Exception as e:
         print("ADMIN RECEIPT ERROR:", e)
 
 
 # =========================================================
-# ORDERS
+# CUSTOMER ORDERS
 # =========================================================
 
 async def customer_orders(query):
@@ -1043,22 +1188,28 @@ async def customer_orders(query):
         )
         return
 
-    status_names = {
+    statuses = {
         "waiting_payment": "⏳ منتظر پرداخت",
         "waiting_admin": "🔎 در انتظار بررسی",
         "paid": "✅ پرداخت تأیید شد",
         "rejected": "❌ پرداخت رد شد",
         "shipped": "🚚 ارسال شد",
-        "completed": "🏁 تکمیل شد",
+        "completed": "🏁 تکمیل شد"
     }
 
     text = "📦 سفارش‌های شما:\n\n"
 
     for order in orders:
+
+        status = statuses.get(
+            order["status"],
+            order["status"]
+        )
+
         text += (
             f"🧾 سفارش #{order['id']}\n"
             f"💰 {order['total']:,} تومان\n"
-            f"📌 {status_names.get(order['status'], order['status'])}\n\n"
+            f"📌 {status}\n\n"
         )
 
     await query.edit_message_text(
@@ -1073,13 +1224,15 @@ async def customer_orders(query):
 
 async def admin_command(update, context):
 
-    if not admin_only(update.effective_user.id):
+    if not is_admin(update.effective_user.id):
         await update.message.reply_text(
-            "❌ دسترسی ندارید."
+            "❌ شما دسترسی مدیریت ندارید."
         )
         return
 
     context.user_data.clear()
+
+    context.user_data["admin_id"] = ADMIN_ID
     context.user_data["state"] = "admin_password"
 
     await update.message.reply_text(
@@ -1089,13 +1242,13 @@ async def admin_command(update, context):
 
 async def admin_password(update, context):
 
-    if not admin_only(update.effective_user.id):
+    if not is_admin(update.effective_user.id):
         return
 
     if context.user_data.get("state") != "admin_password":
         return
 
-    password = update.message.text
+    password = update.message.text.strip()
 
     saved = await setting("admin_password")
 
@@ -1110,6 +1263,7 @@ async def admin_password(update, context):
         return
 
     context.user_data["admin_logged"] = True
+    context.user_data["admin_id"] = ADMIN_ID
     context.user_data["state"] = None
 
     await send_admin_panel(update)
@@ -1118,46 +1272,111 @@ async def admin_password(update, context):
 async def send_admin_panel(update):
 
     keyboard = [
-        [InlineKeyboardButton(
-            "📦 مدیریت محصولات",
-            callback_data="adm_products"
-        )],
-        [InlineKeyboardButton(
-            "🏷 مدیریت برندها",
-            callback_data="adm_brands"
-        )],
-        [InlineKeyboardButton(
-            "🧾 سفارش‌ها",
-            callback_data="adm_orders"
-        )],
-        [InlineKeyboardButton(
-            "⚙️ تنظیمات فروشگاه",
-            callback_data="adm_settings"
-        )],
-        [InlineKeyboardButton(
-            "🔘 مدیریت دکمه‌ها",
-            callback_data="adm_buttons"
-        )],
-        [InlineKeyboardButton(
-            "🔑 تغییر رمز",
-            callback_data="adm_password"
-        )],
-        [InlineKeyboardButton(
-            "🚪 خروج",
-            callback_data="adm_logout"
-        )]
+        [
+            InlineKeyboardButton(
+                "📦 مدیریت محصولات",
+                callback_data="adm_products"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🏷 مدیریت برندها",
+                callback_data="adm_brands"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🧾 سفارش‌ها",
+                callback_data="adm_orders"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "👥 اعضای ربات",
+                callback_data="adm_members"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⚙️ تنظیمات فروشگاه",
+                callback_data="adm_settings"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔑 تغییر رمز",
+                callback_data="adm_password"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🚪 خروج",
+                callback_data="adm_logout"
+            )
+        ]
     ]
 
     await update.message.reply_text(
         "👑 پنل مدیریت فروشگاه\n\n"
-        "از این قسمت می‌توانی کل فروشگاه را مدیریت کنی:",
+        "از منوی زیر مدیریت کن:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
-def is_logged(context):
-    return (
-        context.user_data.get("admin_logged") is True
+# =========================================================
+# ADMIN PANEL
+# =========================================================
+
+async def admin_panel_callback(query, context):
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "📦 مدیریت محصولات",
+                callback_data="adm_products"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🏷 مدیریت برندها",
+                callback_data="adm_brands"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🧾 سفارش‌ها",
+                callback_data="adm_orders"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "👥 اعضای ربات",
+                callback_data="adm_members"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⚙️ تنظیمات فروشگاه",
+                callback_data="adm_settings"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔑 تغییر رمز",
+                callback_data="adm_password"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🚪 خروج",
+                callback_data="adm_logout"
+            )
+        ]
+    ]
+
+    await query.edit_message_text(
+        "👑 پنل مدیریت",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
@@ -1178,19 +1397,22 @@ async def admin_brands(query):
     await conn.close()
 
     keyboard = [
-        [InlineKeyboardButton(
-            "➕ افزودن برند",
-            callback_data="adm_add_brand"
-        )]
+        [
+            InlineKeyboardButton(
+                "➕ افزودن برند",
+                callback_data="adm_add_brand"
+            )
+        ]
     ]
 
-    for b in brands:
-        state = "🟢" if b["active"] else "🔴"
+    for brand in brands:
+
+        icon = "🟢" if brand["active"] else "🔴"
 
         keyboard.append([
             InlineKeyboardButton(
-                f"{state} {b['name']}",
-                callback_data=f"adm_brand:{b['id']}"
+                f"{icon} {brand['name']}",
+                callback_data=f"adm_brand:{brand['id']}"
             )
         ])
 
@@ -1218,29 +1440,38 @@ async def add_brand_start(query, context):
 
 async def add_brand(update, context):
 
-    if context.user_data.get("state") != "add_brand":
-        return
-
     name = update.message.text.strip()
+
+    if not name:
+        return
 
     conn = await db()
 
-    try:
-        await conn.execute(
-            "INSERT INTO brands(name) VALUES($1)",
-            name
+    exists = await conn.fetchval("""
+        SELECT id
+        FROM brands
+        WHERE LOWER(name)=LOWER($1)
+    """, name)
+
+    if exists:
+        await conn.close()
+        await update.message.reply_text(
+            "❌ این برند قبلاً وجود دارد."
         )
+        return
 
-        result = "✅ برند اضافه شد."
-
-    except Exception:
-        result = "❌ این برند قبلاً وجود دارد."
+    await conn.execute(
+        "INSERT INTO brands(name) VALUES($1)",
+        name
+    )
 
     await conn.close()
 
     context.user_data["state"] = None
 
-    await update.message.reply_text(result)
+    await update.message.reply_text(
+        f"✅ برند «{name}» اضافه شد."
+    )
 
 
 # =========================================================
@@ -1260,7 +1491,8 @@ async def admin_products(query):
             p.active,
             b.name AS brand
         FROM products p
-        LEFT JOIN brands b ON b.id=p.brand_id
+        LEFT JOIN brands b
+            ON b.id=p.brand_id
         ORDER BY p.id DESC
         LIMIT 50
     """)
@@ -1268,19 +1500,21 @@ async def admin_products(query):
     await conn.close()
 
     keyboard = [
-        [InlineKeyboardButton(
-            "➕ افزودن محصول",
-            callback_data="adm_add_product"
-        )]
+        [
+            InlineKeyboardButton(
+                "➕ افزودن محصول",
+                callback_data="adm_add_product"
+            )
+        ]
     ]
 
     for p in products:
 
-        state = "🟢" if p["active"] else "🔴"
+        icon = "🟢" if p["active"] else "🔴"
 
         keyboard.append([
             InlineKeyboardButton(
-                f"{state} {p['name']}",
+                f"{icon} {p['name']}",
                 callback_data=f"adm_product:{p['id']}"
             )
         ])
@@ -1311,11 +1545,14 @@ async def add_product_start(query, context):
 async def product_add_message(update, context):
 
     state = context.user_data.get("state")
-    data = context.user_data.setdefault("product", {})
+    data = context.user_data.setdefault(
+        "product",
+        {}
+    )
 
     if state == "product_name":
 
-        data["name"] = update.message.text
+        data["name"] = update.message.text.strip()
         context.user_data["state"] = "product_brand"
 
         conn = await db()
@@ -1330,19 +1567,20 @@ async def product_add_message(update, context):
         await conn.close()
 
         if not brands:
+            context.user_data["state"] = None
+
             await update.message.reply_text(
                 "❌ اول حداقل یک برند بساز."
             )
-            context.user_data["state"] = None
             return
 
         keyboard = []
 
-        for b in brands:
+        for brand in brands:
             keyboard.append([
                 InlineKeyboardButton(
-                    b["name"],
-                    callback_data=f"choosebrand:{b['id']}"
+                    brand["name"],
+                    callback_data=f"choosebrand:{brand['id']}"
                 )
             ])
 
@@ -1350,65 +1588,78 @@ async def product_add_message(update, context):
             "🏷 برند محصول را انتخاب کن:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-
         return
 
     if state == "product_description":
 
-        data["description"] = update.message.text
+        text = update.message.text.strip()
+
+        data["description"] = (
+            "" if text == "ندارد" else text
+        )
+
         context.user_data["state"] = "product_price"
 
         await update.message.reply_text(
-            "💰 قیمت اصلی را فقط به عدد وارد کن.\n"
-            "مثلاً:\n"
-            "2500000"
+            "💰 قیمت اصلی را فقط عدد وارد کن.\n"
+            "مثال: 2500000"
         )
         return
 
     if state == "product_price":
 
         try:
-            data["price"] = int(
+            price = int(
                 update.message.text.replace(",", "")
             )
-        except:
+
+            if price < 0:
+                raise ValueError
+
+        except ValueError:
             await update.message.reply_text(
-                "❌ فقط عدد وارد کن."
+                "❌ فقط عدد صحیح وارد کن."
             )
             return
 
+        data["price"] = price
         context.user_data["state"] = "product_sale"
 
         await update.message.reply_text(
             "🔥 قیمت حراج را وارد کن.\n"
-            "اگر حراج ندارد، عدد 0 بزن."
+            "اگر حراج ندارد: 0"
         )
         return
 
     if state == "product_sale":
 
         try:
-            data["sale_price"] = int(
+            sale = int(
                 update.message.text.replace(",", "")
             )
-        except:
+
+            if sale < 0:
+                raise ValueError
+
+        except ValueError:
             await update.message.reply_text(
-                "❌ فقط عدد وارد کن."
+                "❌ فقط عدد صحیح وارد کن."
             )
             return
 
+        data["sale_price"] = sale
         context.user_data["state"] = "product_sizes"
 
         await update.message.reply_text(
             "📏 سایزها را با کاما جدا کن.\n"
-            "مثلاً:\n"
+            "مثال:\n"
             "40,41,42,43,44,45"
         )
         return
 
     if state == "product_sizes":
 
-        data["sizes"] = update.message.text
+        data["sizes"] = update.message.text.strip()
         context.user_data["state"] = "product_stock"
 
         await update.message.reply_text(
@@ -1419,43 +1670,49 @@ async def product_add_message(update, context):
     if state == "product_stock":
 
         try:
-            data["stock"] = int(update.message.text)
-        except:
+            stock = int(update.message.text)
+
+            if stock < 0:
+                raise ValueError
+
+        except ValueError:
             await update.message.reply_text(
-                "❌ فقط عدد وارد کن."
+                "❌ فقط عدد صحیح وارد کن."
             )
             return
 
+        data["stock"] = stock
         context.user_data["state"] = "product_category"
 
         await update.message.reply_text(
             "👟 دسته‌بندی/کاربرد محصول را بنویس.\n"
-            "مثلاً:\n"
+            "مثال:\n"
             "باشگاه، دویدن، روزمره"
         )
         return
 
     if state == "product_category":
 
-        data["category"] = update.message.text
+        data["category"] = update.message.text.strip()
+
         context.user_data["state"] = "product_keywords"
 
         await update.message.reply_text(
-            "🔎 کلمات جستجو را وارد کن.\n"
-            "مثلاً:\n"
+            "🔎 کلمات جستجو را با کاما بنویس.\n"
+            "مثال:\n"
             "باشگاه,ورزش,تمرین,بدنسازی"
         )
         return
 
     if state == "product_keywords":
 
-        data["keywords"] = update.message.text
-        context.user_data["state"] = "product_images"
-
+        data["keywords"] = update.message.text.strip()
         data["images"] = []
 
+        context.user_data["state"] = "product_images"
+
         await update.message.reply_text(
-            "🖼 حالا عکس‌های محصول را یکی‌یکی بفرست.\n\n"
+            "🖼 عکس‌های محصول را یکی‌یکی بفرست.\n\n"
             "حداکثر ۵ عکس.\n"
             "وقتی تمام شد بنویس:\n"
             "تمام"
@@ -1464,37 +1721,31 @@ async def product_add_message(update, context):
 
     if state == "product_images":
 
-        if update.message.photo:
+        if update.message.text:
 
-            images = data.setdefault("images", [])
+            if update.message.text.strip() == "تمام":
 
-            if len(images) >= 5:
-                await update.message.reply_text(
-                    "⚠️ حداکثر ۵ عکس مجاز است.\n"
-                    "بنویس «تمام»."
+                await save_product(
+                    update,
+                    context
                 )
+
                 return
 
-            images.append(
-                update.message.photo[-1].file_id
-            )
-
-            await update.message.reply_text(
-                f"✅ عکس {len(images)} دریافت شد.\n"
-                f"عکس بعدی یا «تمام»."
-            )
-
-            return
-
-        if update.message.text.strip() == "تمام":
-
-            await save_product(update, context)
-            return
+        await update.message.reply_text(
+            "❌ لطفاً عکس بفرست یا «تمام» بنویس."
+        )
 
 
 async def save_product(update, context):
 
-    data = context.user_data["product"]
+    data = context.user_data.get("product", {})
+
+    if not data.get("images"):
+        await update.message.reply_text(
+            "❌ حداقل یک عکس برای محصول بفرست."
+        )
+        return
 
     conn = await db()
 
@@ -1525,12 +1776,15 @@ async def save_product(update, context):
     )
 
     for position, file_id in enumerate(
-        data.get("images", [])[:5],
+        data["images"][:5],
         start=1
     ):
+
         await conn.execute("""
             INSERT INTO product_images(
-                product_id,file_id,position
+                product_id,
+                file_id,
+                position
             )
             VALUES($1,$2,$3)
         """,
@@ -1541,12 +1795,96 @@ async def save_product(update, context):
 
     await conn.close()
 
+    product_name = data["name"]
+
     context.user_data.clear()
 
     await update.message.reply_text(
-        f"✅ محصول «{data['name']}» اضافه شد.\n\n"
-        f"🆔 شماره محصول: {product_id}\n"
-        f"🖼 تعداد عکس: {len(data.get('images', []))}"
+        f"✅ محصول «{product_name}» اضافه شد.\n\n"
+        f"🆔 شماره محصول: {product_id}",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "📦 مدیریت محصولات",
+                    callback_data="adm_products"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "👑 پنل مدیریت",
+                    callback_data="adm_panel"
+                )
+            ]
+        ])
+    )
+
+
+# =========================================================
+# ADMIN MEMBERS
+# =========================================================
+
+async def admin_members(query):
+
+    conn = await db()
+
+    count = await conn.fetchval(
+        "SELECT COUNT(*) FROM users"
+    )
+
+    members = await conn.fetch("""
+        SELECT
+            telegram_id,
+            username,
+            first_name,
+            created_at
+        FROM users
+        ORDER BY created_at DESC
+        LIMIT 100
+    """)
+
+    await conn.close()
+
+    text = (
+        f"👥 اعضای ربات\n\n"
+        f"👤 تعداد کل اعضا: {count}\n\n"
+    )
+
+    if not members:
+        text += "هنوز عضوی ثبت نشده."
+    else:
+
+        for member in members:
+
+            username = (
+                f"@{member['username']}"
+                if member["username"]
+                else "بدون یوزرنیم"
+            )
+
+            text += (
+                f"👤 {member['first_name'] or 'بدون نام'}\n"
+                f"🆔 {member['telegram_id']}\n"
+                f"📱 {username}\n"
+                f"📅 {member['created_at']}\n"
+                f"━━━━━━━━━━━━\n"
+            )
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🔄 بروزرسانی",
+                    callback_data="adm_members"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔙 پنل",
+                    callback_data="adm_panel"
+                )
+            ]
+        ])
     )
 
 
@@ -1559,7 +1897,11 @@ async def admin_orders(query):
     conn = await db()
 
     orders = await conn.fetch("""
-        SELECT id,customer_name,total,status,created_at
+        SELECT
+            id,
+            customer_name,
+            total,
+            status
         FROM orders
         ORDER BY id DESC
         LIMIT 50
@@ -1578,14 +1920,15 @@ async def admin_orders(query):
 
     keyboard = []
 
-    for o in orders:
+    for order in orders:
 
         keyboard.append([
             InlineKeyboardButton(
-                f"#{o['id']} | {o['customer_name']} | "
-                f"{o['total']:,} | "
-                f"{status_names.get(o['status'], o['status'])}",
-                callback_data=f"adm_order:{o['id']}"
+                f"#{order['id']} | "
+                f"{order['customer_name']} | "
+                f"{order['total']:,} | "
+                f"{status_names.get(order['status'], order['status'])}",
+                callback_data=f"adm_order:{order['id']}"
             )
         ])
 
@@ -1602,6 +1945,80 @@ async def admin_orders(query):
     )
 
 
+async def admin_order_details(query, order_id):
+
+    conn = await db()
+
+    order = await conn.fetchrow("""
+        SELECT *
+        FROM orders
+        WHERE id=$1
+    """, order_id)
+
+    items = await conn.fetch("""
+        SELECT *
+        FROM order_items
+        WHERE order_id=$1
+    """, order_id)
+
+    await conn.close()
+
+    if not order:
+        await query.edit_message_text(
+            "❌ سفارش پیدا نشد.",
+            reply_markup=back_button("adm_orders")
+        )
+        return
+
+    text = (
+        f"🧾 سفارش #{order_id}\n\n"
+        f"👤 {order['customer_name']}\n"
+        f"📱 {order['phone']}\n"
+        f"📍 {order['address']}\n"
+        f"📮 {order['postal_code']}\n\n"
+    )
+
+    for item in items:
+        text += (
+            f"👟 {item['product_name']}\n"
+            f"📏 سایز: {item['size'] or '---'}\n"
+            f"🔢 تعداد: {item['quantity']}\n"
+            f"💰 قیمت: {item['price']:,}\n\n"
+        )
+
+    text += (
+        f"🚚 ارسال: {order['shipping_cost']:,}\n"
+        f"💵 مجموع: {order['total']:,}\n"
+        f"📌 وضعیت: {order['status']}"
+    )
+
+    keyboard = []
+
+    if order["status"] == "waiting_admin":
+        keyboard.append([
+            InlineKeyboardButton(
+                "✅ تأیید پرداخت",
+                callback_data=f"approve:{order_id}"
+            ),
+            InlineKeyboardButton(
+                "❌ رد پرداخت",
+                callback_data=f"reject:{order_id}"
+            )
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "🔙 سفارش‌ها",
+            callback_data="adm_orders"
+        )
+    ])
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
 # =========================================================
 # ADMIN SETTINGS
 # =========================================================
@@ -1611,30 +2028,39 @@ async def admin_settings(query):
     card = await setting("card_number")
     shipping = await setting("shipping_cost")
 
-    keyboard = [
-        [InlineKeyboardButton(
-            "💳 تغییر شماره کارت",
-            callback_data="set_card"
-        )],
-        [InlineKeyboardButton(
-            "🚚 تغییر هزینه ارسال",
-            callback_data="set_shipping"
-        )],
-        [InlineKeyboardButton(
-            "📞 تغییر متن پشتیبانی",
-            callback_data="set_support"
-        )],
-        [InlineKeyboardButton(
-            "🔙 پنل",
-            callback_data="adm_panel"
-        )]
-    ]
-
     await query.edit_message_text(
         "⚙️ تنظیمات فروشگاه\n\n"
         f"💳 کارت: {card or 'ثبت نشده'}\n"
-        f"🚚 ارسال: {shipping or '0'} تومان",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        f"🚚 ارسال: {shipping:,} تومان"
+        if shipping.isdigit()
+        else
+        "⚙️ تنظیمات فروشگاه",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "💳 تغییر شماره کارت",
+                    callback_data="set_card"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🚚 تغییر هزینه ارسال",
+                    callback_data="set_shipping"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📞 تغییر پشتیبانی",
+                    callback_data="set_support"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🔙 پنل",
+                    callback_data="adm_panel"
+                )
+            ]
+        ])
     )
 
 
@@ -1653,9 +2079,6 @@ async def change_password_start(query, context):
 
 async def change_password(update, context):
 
-    if context.user_data.get("state") != "new_password":
-        return
-
     password = update.message.text.strip()
 
     if len(password) < 4:
@@ -1666,32 +2089,98 @@ async def change_password(update, context):
 
     await set_setting(
         "admin_password",
-        hashlib.sha256(password.encode()).hexdigest()
+        hashlib.sha256(
+            password.encode()
+        ).hexdigest()
     )
 
     context.user_data["state"] = None
 
     await update.message.reply_text(
-        "✅ رمز پنل با موفقیت تغییر کرد."
+        "✅ رمز با موفقیت تغییر کرد."
     )
 
 
 # =========================================================
-# ADMIN CALLBACKS
+# ADMIN TEXT SETTINGS
+# =========================================================
+
+async def admin_setting_message(update, context):
+
+    state = context.user_data.get("state")
+
+    if state == "set_card":
+
+        await set_setting(
+            "card_number",
+            update.message.text.strip()
+        )
+
+        context.user_data["state"] = None
+
+        await update.message.reply_text(
+            "✅ شماره کارت ذخیره شد."
+        )
+        return
+
+    if state == "set_shipping":
+
+        try:
+            value = int(
+                update.message.text.replace(",", "")
+            )
+
+            if value < 0:
+                raise ValueError
+
+        except ValueError:
+            await update.message.reply_text(
+                "❌ فقط عدد وارد کن."
+            )
+            return
+
+        await set_setting(
+            "shipping_cost",
+            str(value)
+        )
+
+        context.user_data["state"] = None
+
+        await update.message.reply_text(
+            "✅ هزینه ارسال ذخیره شد."
+        )
+        return
+
+    if state == "set_support":
+
+        await set_setting(
+            "support_text",
+            update.message.text
+        )
+
+        context.user_data["state"] = None
+
+        await update.message.reply_text(
+            "✅ متن پشتیبانی ذخیره شد."
+        )
+
+
+# =========================================================
+# ADMIN CALLBACK
 # =========================================================
 
 async def admin_callback(query, context):
 
-    if not admin_only(query.from_user.id):
+    if not is_admin(query.from_user.id):
         await query.answer(
-            "دسترسی ندارید.",
+            "❌ دسترسی ندارید.",
             show_alert=True
         )
         return
 
     if not is_logged(context):
         await query.answer(
-            "ابتدا با /admin وارد شوید.",
+            "❌ ابتدا /admin را بزن و وارد پنل شو.",
             show_alert=True
         )
         return
@@ -1699,37 +2188,9 @@ async def admin_callback(query, context):
     data = query.data
 
     if data == "adm_panel":
-
-        keyboard = [
-            [InlineKeyboardButton(
-                "📦 مدیریت محصولات",
-                callback_data="adm_products"
-            )],
-            [InlineKeyboardButton(
-                "🏷 مدیریت برندها",
-                callback_data="adm_brands"
-            )],
-            [InlineKeyboardButton(
-                "🧾 سفارش‌ها",
-                callback_data="adm_orders"
-            )],
-            [InlineKeyboardButton(
-                "⚙️ تنظیمات فروشگاه",
-                callback_data="adm_settings"
-            )],
-            [InlineKeyboardButton(
-                "🔑 تغییر رمز",
-                callback_data="adm_password"
-            )],
-            [InlineKeyboardButton(
-                "🚪 خروج",
-                callback_data="adm_logout"
-            )]
-        ]
-
-        await query.edit_message_text(
-            "👑 پنل مدیریت",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+        await admin_panel_callback(
+            query,
+            context
         )
 
     elif data == "adm_products":
@@ -1738,33 +2199,65 @@ async def admin_callback(query, context):
     elif data == "adm_brands":
         await admin_brands(query)
 
+    elif data == "adm_orders":
+        await admin_orders(query)
+
+    elif data == "adm_members":
+        await admin_members(query)
+
+    elif data == "adm_settings":
+        await admin_settings(query)
+
     elif data == "adm_add_brand":
-        await add_brand_start(query, context)
+        await add_brand_start(
+            query,
+            context
+        )
 
     elif data == "adm_add_product":
-        await add_product_start(query, context)
+        await add_product_start(
+            query,
+            context
+        )
 
     elif data.startswith("choosebrand:"):
 
-        brand_id = int(data.split(":")[1])
+        brand_id = int(
+            data.split(":")[1]
+        )
+
+        if "product" not in context.user_data:
+            await query.answer(
+                "❌ فرایند افزودن محصول منقضی شده.",
+                show_alert=True
+            )
+            return
 
         context.user_data["product"]["brand_id"] = brand_id
         context.user_data["state"] = "product_description"
 
         await query.edit_message_text(
             "📝 توضیحات محصول را بنویس.\n"
-            "اگر توضیحی نداری، بنویس:\n"
+            "اگر توضیح نداری بنویس:\n"
             "ندارد"
         )
 
-    elif data == "adm_orders":
-        await admin_orders(query)
+    elif data.startswith("adm_order:"):
 
-    elif data == "adm_settings":
-        await admin_settings(query)
+        order_id = int(
+            data.split(":")[1]
+        )
+
+        await admin_order_details(
+            query,
+            order_id
+        )
 
     elif data == "adm_password":
-        await change_password_start(query, context)
+        await change_password_start(
+            query,
+            context
+        )
 
     elif data == "set_card":
 
@@ -1792,14 +2285,26 @@ async def admin_callback(query, context):
 
     elif data.startswith("approve:"):
 
-        order_id = int(data.split(":")[1])
+        order_id = int(
+            data.split(":")[1]
+        )
 
         conn = await db()
 
-        order = await conn.fetchrow(
-            "SELECT telegram_id FROM orders WHERE id=$1",
-            order_id
-        )
+        order = await conn.fetchrow("""
+            SELECT *
+            FROM orders
+            WHERE id=$1
+        """, order_id)
+
+        if not order:
+            await conn.close()
+
+            await query.answer(
+                "❌ سفارش پیدا نشد.",
+                show_alert=True
+            )
+            return
 
         await conn.execute("""
             UPDATE orders
@@ -1809,25 +2314,49 @@ async def admin_callback(query, context):
 
         await conn.close()
 
-        if order:
+        try:
             await context.bot.send_message(
-                order["telegram_id"],
-                f"✅ پرداخت سفارش #{order_id} تأیید شد.\n\n"
-                "📦 سفارش شما ثبت نهایی شد و در اسرع وقت ارسال می‌شود."
+                chat_id=order["telegram_id"],
+                text=(
+                    f"✅ پرداخت سفارش #{order_id} تأیید شد.\n\n"
+                    "📦 سفارش شما ثبت نهایی شد و "
+                    "در اسرع وقت ارسال می‌شود."
+                )
             )
+        except Exception as e:
+            print("CUSTOMER MESSAGE ERROR:", e)
 
-        await query.answer("پرداخت تأیید شد.")
+        await query.answer(
+            "✅ پرداخت تأیید شد."
+        )
+
+        await admin_order_details(
+            query,
+            order_id
+        )
 
     elif data.startswith("reject:"):
 
-        order_id = int(data.split(":")[1])
+        order_id = int(
+            data.split(":")[1]
+        )
 
         conn = await db()
 
-        order = await conn.fetchrow(
-            "SELECT telegram_id FROM orders WHERE id=$1",
-            order_id
-        )
+        order = await conn.fetchrow("""
+            SELECT *
+            FROM orders
+            WHERE id=$1
+        """, order_id)
+
+        if not order:
+            await conn.close()
+
+            await query.answer(
+                "❌ سفارش پیدا نشد.",
+                show_alert=True
+            )
+            return
 
         await conn.execute("""
             UPDATE orders
@@ -1837,14 +2366,25 @@ async def admin_callback(query, context):
 
         await conn.close()
 
-        if order:
+        try:
             await context.bot.send_message(
-                order["telegram_id"],
-                f"❌ پرداخت سفارش #{order_id} تأیید نشد.\n\n"
-                "لطفاً رسید پرداخت را بررسی کرده و دوباره ارسال کنید."
+                chat_id=order["telegram_id"],
+                text=(
+                    f"❌ پرداخت سفارش #{order_id} تأیید نشد.\n\n"
+                    "لطفاً رسید پرداخت را بررسی کنید."
+                )
             )
+        except Exception as e:
+            print("CUSTOMER MESSAGE ERROR:", e)
 
-        await query.answer("پرداخت رد شد.")
+        await query.answer(
+            "❌ پرداخت رد شد."
+        )
+
+        await admin_order_details(
+            query,
+            order_id
+        )
 
     elif data == "adm_logout":
 
@@ -1856,77 +2396,15 @@ async def admin_callback(query, context):
 
 
 # =========================================================
-# ADMIN SETTINGS TEXT
+# CUSTOMER CALLBACK
 # =========================================================
 
-async def admin_setting_message(update, context):
-
-    state = context.user_data.get("state")
-
-    if state == "set_card":
-
-        await set_setting(
-            "card_number",
-            update.message.text.strip()
-        )
-
-        context.user_data["state"] = None
-
-        await update.message.reply_text(
-            "✅ شماره کارت ذخیره شد."
-        )
-        return
-
-    if state == "set_shipping":
-
-        try:
-            int(update.message.text.replace(",", ""))
-        except:
-            await update.message.reply_text(
-                "❌ فقط عدد وارد کن."
-            )
-            return
-
-        await set_setting(
-            "shipping_cost",
-            update.message.text.replace(",", "")
-        )
-
-        context.user_data["state"] = None
-
-        await update.message.reply_text(
-            "✅ هزینه ارسال ذخیره شد."
-        )
-        return
-
-    if state == "set_support":
-
-        await set_setting(
-            "support_text",
-            update.message.text
-        )
-
-        context.user_data["state"] = None
-
-        await update.message.reply_text(
-            "✅ متن پشتیبانی ذخیره شد."
-        )
-        return
-
-
-# =========================================================
-# MAIN CALLBACK
-# =========================================================
-
-async def callback_handler(update, context):
-
-    query = update.callback_query
-    await query.answer()
+async def customer_callback(query, context):
 
     data = query.data
 
-    # مشتری
     if data == "home":
+
         await query.edit_message_text(
             "👟 به فروشگاه کفش و کتونی خوش آمدید!\n\n"
             "از منوی زیر انتخاب کنید:",
@@ -1940,20 +2418,30 @@ async def callback_handler(update, context):
         await sale_products(query)
 
     elif data.startswith("brand:"):
+
         await brand_products(
             query,
             int(data.split(":")[1])
         )
 
     elif data.startswith("product:"):
+
         await product_details(
             query,
             int(data.split(":")[1])
         )
 
     elif data.startswith("buy:"):
+
         await add_to_cart(
-            update,
+            type(
+                "Obj",
+                (),
+                {
+                    "callback_query": query,
+                    "effective_user": query.from_user
+                }
+            )(),
             int(data.split(":")[1])
         )
 
@@ -1962,7 +2450,14 @@ async def callback_handler(update, context):
         parts = data.split(":", 2)
 
         await insert_cart(
-            update,
+            type(
+                "Obj",
+                (),
+                {
+                    "callback_query": query,
+                    "effective_user": query.from_user
+                }
+            )(),
             int(parts[1]),
             parts[2]
         )
@@ -1971,101 +2466,163 @@ async def callback_handler(update, context):
         await show_cart(query)
 
     elif data == "checkout":
-        await checkout_start(query, context)
+        await checkout_start(
+            query,
+            context
+        )
 
     elif data == "orders":
         await customer_orders(query)
 
     elif data == "search":
-        await start_search(query, context)
-
-    elif data == "members":
-
-        conn = await db()
-        count = await conn.fetchval(
-            "SELECT COUNT(*) FROM users"
-        )
-        await conn.close()
-
-        await query.edit_message_text(
-            f"👥 اعضای ربات\n\n"
-            f"تعداد اعضا: {count}",
-            reply_markup=back_button("home")
+        await start_search(
+            query,
+            context
         )
 
     elif data == "support":
 
-        text = await setting("support_text")
+        text = await setting(
+            "support_text"
+        )
 
         await query.edit_message_text(
             text,
             reply_markup=back_button("home")
         )
 
-    # ادمین
-    elif data.startswith("adm_") or data.startswith("approve:") or data.startswith("reject:") or data.startswith("set_") or data.startswith("choosebrand:"):
+
+# =========================================================
+# CALLBACK ROUTER
+# =========================================================
+
+async def callback_handler(update, context):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    data = query.data
+
+    admin_callbacks = (
+        data.startswith("adm_")
+        or data.startswith("approve:")
+        or data.startswith("reject:")
+        or data.startswith("set_")
+        or data.startswith("choosebrand:")
+    )
+
+    if admin_callbacks:
 
         await admin_callback(
             query,
             context
         )
 
+    else:
+
+        await customer_callback(
+            query,
+            context
+        )
+
 
 # =========================================================
-# TEXT HANDLER
+# TEXT ROUTER
 # =========================================================
 
 async def text_handler(update, context):
 
     state = context.user_data.get("state")
 
-    # ورود ادمین
     if state == "admin_password":
-        await admin_password(update, context)
+
+        await admin_password(
+            update,
+            context
+        )
         return
 
-    # تنظیمات ادمین
     if state in (
         "set_card",
         "set_shipping",
         "set_support"
     ):
-        await admin_setting_message(update, context)
+
+        if not is_admin(
+            update.effective_user.id
+        ):
+            return
+
+        await admin_setting_message(
+            update,
+            context
+        )
         return
 
-    # تغییر رمز
     if state == "new_password":
-        await change_password(update, context)
+
+        if not is_admin(
+            update.effective_user.id
+        ):
+            return
+
+        await change_password(
+            update,
+            context
+        )
         return
 
-    # افزودن برند
     if state == "add_brand":
-        await add_brand(update, context)
+
+        if not is_admin(
+            update.effective_user.id
+        ):
+            return
+
+        await add_brand(
+            update,
+            context
+        )
         return
 
-    # افزودن محصول
     if state and state.startswith("product_"):
-        await product_add_message(update, context)
+
+        if not is_admin(
+            update.effective_user.id
+        ):
+            return
+
+        await product_add_message(
+            update,
+            context
+        )
         return
 
-    # اطلاعات مشتری
     if state in (
         "customer_name",
         "phone",
         "address",
         "postal"
     ):
-        await checkout_message(update, context)
+
+        await checkout_message(
+            update,
+            context
+        )
         return
 
-    # جستجو
     if state == "search":
-        await do_search(update, context)
+
+        await do_search(
+            update,
+            context
+        )
         return
 
 
 # =========================================================
-# PHOTO HANDLER
+# PHOTO ROUTER
 # =========================================================
 
 async def photo_handler(update, context):
@@ -2073,12 +2630,44 @@ async def photo_handler(update, context):
     state = context.user_data.get("state")
 
     if state == "product_images":
-        await product_add_message(update, context)
+
+        if not is_admin(
+            update.effective_user.id
+        ):
+            return
+
+        images = context.user_data.setdefault(
+            "product",
+            {}
+        ).setdefault(
+            "images",
+            []
+        )
+
+        if len(images) >= 5:
+
+            await update.message.reply_text(
+                "⚠️ حداکثر ۵ عکس مجاز است.\n"
+                "بنویس «تمام»."
+            )
+            return
+
+        images.append(
+            update.message.photo[-1].file_id
+        )
+
+        await update.message.reply_text(
+            f"✅ عکس {len(images)} دریافت شد.\n"
+            "عکس بعدی یا «تمام»."
+        )
         return
 
     if state and state.startswith("receipt:"):
-        await receive_receipt(update, context)
-        return
+
+        await receive_receipt(
+            update,
+            context
+        )
 
 
 # =========================================================
@@ -2086,16 +2675,25 @@ async def photo_handler(update, context):
 # =========================================================
 
 async def error_handler(update, context):
-    print("ERROR:", context.error)
+
+    print(
+        "❌ ERROR:",
+        repr(context.error)
+    )
 
 
 # =========================================================
-# START BOT
+# POST INIT
 # =========================================================
 
 async def post_init(application):
+
     await init_db()
 
+
+# =========================================================
+# APPLICATION
+# =========================================================
 
 app = (
     Application.builder()
@@ -2105,15 +2703,23 @@ app = (
 )
 
 app.add_handler(
-    CommandHandler("start", start)
+    CommandHandler(
+        "start",
+        start
+    )
 )
 
 app.add_handler(
-    CommandHandler("admin", admin_command)
+    CommandHandler(
+        "admin",
+        admin_command
+    )
 )
 
 app.add_handler(
-    CallbackQueryHandler(callback_handler)
+    CallbackQueryHandler(
+        callback_handler
+    )
 )
 
 app.add_handler(
@@ -2130,8 +2736,10 @@ app.add_handler(
     )
 )
 
-app.add_error_handler(error_handler)
+app.add_error_handler(
+    error_handler
+)
 
-print("BOT STARTED")
+print("🚀 BOT STARTED")
 
 app.run_polling()
