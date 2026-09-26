@@ -1,6 +1,13 @@
 import os
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
+
 
 TOKEN = os.environ["BOT_TOKEN"]
 
@@ -22,12 +29,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👟 به فروشگاه کفش و کتونی خوش آمدید!\n\n"
         "از منوی زیر انتخاب کنید:",
-        reply_markup=reply_markup
+        reply_markup=reply_markup,
     )
 
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     query = update.callback_query
+
     await query.answer()
 
     if query.data == "products":
@@ -37,19 +48,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif query.data == "cart":
-        await query.edit_message_text("🛒 سبد خرید شما خالی است.")
+        await query.edit_message_text(
+            "🛒 سبد خرید شما خالی است."
+        )
 
     elif query.data == "orders":
-        await query.edit_message_text("📦 هنوز سفارشی ثبت نکرده‌اید.")
+        await query.edit_message_text(
+            "📦 هنوز سفارشی ثبت نکرده‌اید."
+        )
 
     elif query.data == "support":
-        await query.edit_message_text("📞 برای پشتیبانی با ما در ارتباط باشید.")
+        await query.edit_message_text(
+            "📞 برای پشتیبانی با ما در ارتباط باشید."
+        )
 
 
-app = Application.builder().token(TOKEN).build()
+def main():
+    app = Application.builder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(
+        CallbackQueryHandler(button_handler)
+    )
 
-print("👟 فروشگاه آنلاین شد...")
-app.run_polling()
+    print("👟 فروشگاه آنلاین شد...")
+
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
