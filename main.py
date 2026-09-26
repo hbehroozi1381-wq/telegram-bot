@@ -1,33 +1,45 @@
 import os
 import asyncpg
+import hashlib
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
-    MessageHandler,
     ContextTypes,
+    MessageHandler,
     filters,
 )
 
-TOKEN = os.environ["BOT_TOKEN"]
+# =========================
+# SETTINGS
+# =========================
+
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 
-# بعداً آیدی عددی تلگرام خودت را اینجا قرار می‌دهیم
-ADMIN_IDS = set()
+ADMIN_ID = 888720947
+
+# رمز اولیه فقط برای اولین ورود است.
+# بعداً از داخل پنل تغییرش می‌دهیم.
+DEFAULT_ADMIN_PASSWORD = "123456"
 
 
 # =========================
 # DATABASE
 # =========================
 
-async def get_db():
+async def db_connect():
     return await asyncpg.connect(DATABASE_URL)
 
 
 async def init_database():
-    db = await get_db()
+    db = await db_connect()
 
     await db.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -43,7 +55,7 @@ async def init_database():
             name TEXT NOT NULL,
             price BIGINT NOT NULL DEFAULT 0,
             sizes TEXT DEFAULT '',
-            image_url TEXT DEFAULT '',
+            image_file_id TEXT DEFAULT '',
             description TEXT DEFAULT '',
             stock INTEGER DEFAULT 0,
             active BOOLEAN DEFAULT TRUE,
@@ -55,7 +67,6 @@ async def init_database():
             telegram_id BIGINT NOT NULL,
             total BIGINT DEFAULT 0,
             status TEXT DEFAULT 'pending',
-            receipt_file_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -76,14 +87,30 @@ async def init_database():
             position INTEGER DEFAULT 0,
             active BOOLEAN DEFAULT TRUE
         );
+
+        CREATE TABLE IF NOT EXISTS admin_settings (
+            id INTEGER PRIMARY KEY,
+            password_hash TEXT NOT NULL
+        );
     """)
 
-    # دکمه‌های پیش‌فرض
-    count = await db.fetchval(
-        "SELECT COUNT(*) FROM bot_buttons"
-    )
+    # ساخت رمز اولیه فقط اگر هنوز رمز وجود ندارد
+    password_hash = hashlib.sha256(
+        DEFAULT_ADMIN_PASSWORD.encode()
+    ).hexdigest()
 
-    if count == 0:
+    await db.execute("""
+        INSERT INTO admin_settings (id, password_hash)
+        VALUES (1, $1)
+        ON CONFLICT (id) DO NOTHING
+    """, password_hash)
+
+    # ساخت دکمه‌های اولیه
+    button_count = await db.fetchval("""
+        SELECT COUNT(*) FROM bot_buttons
+    """)
+
+    if button_count == 0:
         await db.execute("""
             INSERT INTO bot_buttons
             (title, callback_data, position)
@@ -97,17 +124,20 @@ async def init_database():
     await db.close()
 
     print("✅ PostgreSQL connected")
-    print("✅ Database tables ready")
+    print("✅ Database initialized")
 
 
 # =========================
-# USERS
+# USER
 # =========================
 
 async def save_user(update: Update):
     user = update.effective_user
 
-    db = await get_db()
+    if not user:
+        return
+
+    db = await db_connect()
 
     await db.execute("""
         INSERT INTO users
@@ -120,18 +150,18 @@ async def save_user(update: Update):
     """,
         user.id,
         user.username,
-        user.first_name
+        user.first_name,
     )
 
     await db.close()
 
 
 # =========================
-# MAIN MENU
+# CUSTOMER MENU
 # =========================
 
-async def get_main_menu():
-    db = await get_db()
+async def customer_menu():
+    db = await db_connect()
 
     buttons = await db.fetch("""
         SELECT title, callback_data
@@ -143,14 +173,13 @@ async def get_main_menu():
     await db.close()
 
     keyboard = []
-
     row = []
 
     for button in buttons:
         row.append(
             InlineKeyboardButton(
                 button["title"],
-                callback_data=button["callback_data"]
+                callback_data=button["callback_data"],
             )
         )
 
@@ -171,12 +200,12 @@ async def get_main_menu():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_user(update)
 
-    menu = await get_main_menu()
+    menu = await customer_menu()
 
     await update.message.reply_text(
         "👟 به فروشگاه کفش و کتونی خوش آمدید!\n\n"
         "از منوی زیر انتخاب کنید:",
-        reply_markup=menu
+        reply_markup=menu,
     )
 
 
@@ -185,10 +214,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 async def show_products(query):
-    db = await get_db()
+    db = await db_connect()
 
     products = await db.fetch("""
-        SELECT id, name, price, sizes
+        SELECT id, name, price
         FROM products
         WHERE active = TRUE
         ORDER BY id DESC
@@ -198,34 +227,44 @@ async def show_products(query):
 
     if not products:
         await query.edit_message_text(
-            "🛍 فعلاً محصولی ثبت نشده است."
+            "🛍 فعلاً محصولی ثبت نشده است.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 برگشت",
+                        callback_data="home",
+                    )
+                ]
+            ]),
         )
         return
 
     keyboard = []
 
     for product in products:
-        text = f"👟 {product['name']} | {product['price']:,} تومان"
-
         keyboard.append([
             InlineKeyboardButton(
-                text,
-                callback_data=f"product_{product['id']}"
+                f"👟 {product['name']} | "
+                f"{product['price']:,} تومان",
+                callback_data=f"product:{product['id']}",
             )
         ])
 
     keyboard.append([
-        InlineKeyboardButton("🔙 برگشت", callback_data="home")
+        InlineKeyboardButton(
+            "🔙 برگشت",
+            callback_data="home",
+        )
     ])
 
     await query.edit_message_text(
         "🛍 محصولات فروشگاه:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
 async def show_product(query, product_id):
-    db = await get_db()
+    db = await db_connect()
 
     product = await db.fetchrow("""
         SELECT *
@@ -244,7 +283,8 @@ async def show_product(query, product_id):
     text = (
         f"👟 {product['name']}\n\n"
         f"💰 قیمت: {product['price']:,} تومان\n"
-        f"📏 سایزها: {product['sizes'] or 'ثبت نشده'}\n"
+        f"📏 سایزها: "
+        f"{product['sizes'] or 'ثبت نشده'}\n"
         f"📦 موجودی: {product['stock']}\n\n"
         f"{product['description'] or ''}"
     )
@@ -252,28 +292,28 @@ async def show_product(query, product_id):
     keyboard = [
         [
             InlineKeyboardButton(
-                "🛒 افزودن به سفارش",
-                callback_data=f"buy_{product['id']}"
+                "🛒 افزودن به سبد",
+                callback_data=f"buy:{product['id']}",
             )
         ],
         [
             InlineKeyboardButton(
                 "🔙 محصولات",
-                callback_data="products"
+                callback_data="products",
             )
-        ]
+        ],
     ]
 
     markup = InlineKeyboardMarkup(keyboard)
 
-    if product["image_url"]:
+    if product["image_file_id"]:
         try:
             await query.message.delete()
 
             await query.message.chat.send_photo(
-                photo=product["image_url"],
+                photo=product["image_file_id"],
                 caption=text,
-                reply_markup=markup
+                reply_markup=markup,
             )
             return
         except Exception:
@@ -281,34 +321,287 @@ async def show_product(query, product_id):
 
     await query.edit_message_text(
         text,
-        reply_markup=markup
+        reply_markup=markup,
     )
 
 
 # =========================
-# BUTTON HANDLER
+# ADMIN SECURITY
 # =========================
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def is_admin(user_id):
+    return user_id == ADMIN_ID
+
+
+async def check_password(password):
+    db = await db_connect()
+
+    password_hash = hashlib.sha256(
+        password.encode()
+    ).hexdigest()
+
+    result = await db.fetchval("""
+        SELECT COUNT(*)
+        FROM admin_settings
+        WHERE id = 1 AND password_hash = $1
+    """, password_hash)
+
+    await db.close()
+
+    return result == 1
+
+
+# =========================
+# ADMIN COMMAND
+# =========================
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ دسترسی غیرمجاز."
+        )
+        return
+
+    context.user_data["admin_login"] = False
+    context.user_data["waiting_password"] = True
+
+    await update.message.reply_text(
+        "🔐 پنل مدیریت\n\n"
+        "رمز مدیریت را وارد کنید:"
+    )
+
+
+# =========================
+# ADMIN PANEL
+# =========================
+
+async def show_admin_panel(update, context):
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "➕ افزودن محصول",
+                callback_data="admin:add",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📦 مدیریت محصولات",
+                callback_data="admin:products",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🛒 سفارش‌ها",
+                callback_data="admin:orders",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⚙️ مدیریت دکمه‌ها",
+                callback_data="admin:buttons",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔑 تغییر رمز",
+                callback_data="admin:password",
+            )
+        ],
+    ]
+
+    text = (
+        "👑 پنل مدیریت فروشگاه\n\n"
+        "از اینجا فروشگاه را مدیریت کن:"
+    )
+
+    if hasattr(update, "message") and update.message:
+        await update.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+
+# =========================
+# ADMIN CALLBACK
+# =========================
+
+async def admin_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        await query.edit_message_text(
+            "❌ دسترسی غیرمجاز."
+        )
+        return
+
+    if not context.user_data.get("admin_login"):
+        await query.edit_message_text(
+            "🔐 ابتدا با /admin وارد پنل شوید."
+        )
+        return
+
+    data = query.data
+
+    if data == "admin:add":
+        await query.edit_message_text(
+            "➕ افزودن محصول\n\n"
+            "این بخش را در مرحله بعد فعال می‌کنیم.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 پنل مدیریت",
+                        callback_data="admin:home",
+                    )
+                ]
+            ]),
+        )
+
+    elif data == "admin:products":
+        await query.edit_message_text(
+            "📦 مدیریت محصولات\n\n"
+            "این بخش در مرحله بعد فعال می‌شود.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 پنل مدیریت",
+                        callback_data="admin:home",
+                    )
+                ]
+            ]),
+        )
+
+    elif data == "admin:orders":
+        await query.edit_message_text(
+            "🛒 مدیریت سفارش‌ها\n\n"
+            "این بخش در مرحله بعد فعال می‌شود.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 پنل مدیریت",
+                        callback_data="admin:home",
+                    )
+                ]
+            ]),
+        )
+
+    elif data == "admin:buttons":
+        await query.edit_message_text(
+            "⚙️ مدیریت دکمه‌ها\n\n"
+            "این بخش در مرحله بعد فعال می‌شود.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 پنل مدیریت",
+                        callback_data="admin:home",
+                    )
+                ]
+            ]),
+        )
+
+    elif data == "admin:password":
+        context.user_data["changing_password"] = True
+
+        await query.edit_message_text(
+            "🔑 رمز جدید را ارسال کنید:"
+        )
+
+    elif data == "admin:home":
+        await show_admin_panel(update, context)
+
+
+# =========================
+# TEXT HANDLER
+# =========================
+
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+
+    # فقط مدیر می‌تواند این بخش را استفاده کند
+    if not is_admin(user_id):
+        return
+
+    # ورود به پنل
+    if context.user_data.get("waiting_password"):
+        context.user_data["waiting_password"] = False
+
+        if await check_password(text):
+            context.user_data["admin_login"] = True
+
+            await update.message.reply_text(
+                "✅ ورود موفق بود."
+            )
+
+            await show_admin_panel(update, context)
+
+        else:
+            await update.message.reply_text(
+                "❌ رمز اشتباه است."
+            )
+
+        return
+
+    # تغییر رمز
+    if context.user_data.get("changing_password"):
+        context.user_data["changing_password"] = False
+
+        new_hash = hashlib.sha256(
+            text.encode()
+        ).hexdigest()
+
+        db = await db_connect()
+
+        await db.execute("""
+            UPDATE admin_settings
+            SET password_hash = $1
+            WHERE id = 1
+        """, new_hash)
+
+        await db.close()
+
+        await update.message.reply_text(
+            "✅ رمز مدیریت با موفقیت تغییر کرد."
+        )
+
+        await show_admin_panel(update, context)
+
+
+# =========================
+# CALLBACK ROUTER
+# =========================
+
+async def button_handler(update, context):
     query = update.callback_query
     await query.answer()
 
     data = query.data
 
+    if data.startswith("admin:"):
+        await admin_callback(update, context)
+        return
+
     if data == "home":
-        menu = await get_main_menu()
+        menu = await customer_menu()
 
         await query.edit_message_text(
             "👟 به فروشگاه کفش و کتونی خوش آمدید!\n\n"
             "از منوی زیر انتخاب کنید:",
-            reply_markup=menu
+            reply_markup=menu,
         )
 
     elif data == "products":
         await show_products(query)
 
-    elif data.startswith("product_"):
-        product_id = int(data.split("_")[1])
+    elif data.startswith("product:"):
+        product_id = int(data.split(":")[1])
         await show_product(query, product_id)
 
     elif data == "cart":
@@ -318,24 +611,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [
                     InlineKeyboardButton(
                         "🔙 برگشت",
-                        callback_data="home"
+                        callback_data="home",
                     )
                 ]
-            ])
+            ]),
         )
 
     elif data == "orders":
         await query.edit_message_text(
-            "📦 سفارش‌های شما\n\n"
-            "فعلاً سفارشی ثبت نشده است.",
+            "📦 هنوز سفارشی ثبت نکرده‌اید.",
             reply_markup=InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton(
                         "🔙 برگشت",
-                        callback_data="home"
+                        callback_data="home",
                     )
                 ]
-            ])
+            ]),
         )
 
     elif data == "support":
@@ -345,68 +637,52 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [
                     InlineKeyboardButton(
                         "🔙 برگشت",
-                        callback_data="home"
+                        callback_data="home",
                     )
                 ]
-            ])
+            ]),
         )
 
-    elif data == "admin":
-        await admin_panel(query)
-
 
 # =========================
-# ADMIN PANEL
+# APP START
 # =========================
 
-def is_admin(user_id):
-    return user_id in ADMIN_IDS
+async def post_init(application):
+    await init_database()
 
 
-async def admin_panel(query):
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "➕ افزودن محصول",
-                callback_data="admin_add"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📦 محصولات",
-                callback_data="admin_products"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🛒 سفارش‌ها",
-                callback_data="admin_orders"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "⚙️ مدیریت دکمه‌ها",
-                callback_data="admin_buttons"
-            )
-        ],
-    ]
-
-    await query.edit_message_text(
-        "👑 پنل مدیریت\n\n"
-        "یکی از گزینه‌ها را انتخاب کنید:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+def main():
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
     )
 
+    app.add_handler(
+        CommandHandler("start", start)
+    )
 
-# =========================
-# ADMIN COMMAND
-# =========================
+    app.add_handler(
+        CommandHandler("admin", admin)
+    )
 
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text(
-            "❌ شما دسترسی مدیریت ندارید."
+    app.add_handler(
+        CallbackQueryHandler(button_handler)
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_handler,
         )
-        return
+    )
 
-    keyboard
+    print("👟 فروشگاه آنلاین شد...")
+
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
